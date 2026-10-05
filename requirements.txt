@@ -1,0 +1,9 @@
+customtkinter
+dateparser
+apscheduler
+win11toast
+pillow
+pystray
+pynput
+requests
+python-dotenv

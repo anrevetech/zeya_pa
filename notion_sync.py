@@ -1,6 +1,10 @@
 """
 notion_sync.py - One-way sync from zeya_pa to a Notion "Daily Drop" database.
 Each day gets one page with three sections: To-do, Brain dump, Little reminders.
+
+The title and date columns are looked up from the database itself, so renaming
+them in Notion (e.g. "Name" -> "Title") doesn't break the sync. Errors written
+to data/notion_sync.log include Notion's own explanation.
 """
 
 import os
@@ -24,44 +28,74 @@ HEADERS = {
 }
 SECTIONS = ["To-do", "Brain dump", "Little reminders"]
 
+_schema = {}
+
+
+def _check(response):
+    """Like raise_for_status, but keeps Notion's explanation of what's wrong."""
+    if response.ok:
+        return
+    try:
+        message = response.json().get("message", response.text)
+    except ValueError:
+        message = response.text
+    raise RuntimeError(f"{response.status_code} {message}")
+
 
 def _text(t):
     return [{"type": "text", "text": {"content": t}}]
 
 
+def _columns():
+    """Find the database's title column and date column (cached)."""
+    if not _schema:
+        r = requests.get(f"{API}/databases/{DB}", headers=HEADERS, timeout=10)
+        _check(r)
+        props = r.json()["properties"]
+        _schema["title"] = next(n for n, p in props.items() if p["type"] == "title")
+        dates = [n for n, p in props.items() if p["type"] == "date"]
+        _schema["date"] = "Date" if "Date" in dates else (dates[0] if dates else None)
+    return _schema
+
+
 def _today_page_id():
     today = dt.date.today()
-    q = requests.post(
-        f"{API}/databases/{DB}/query", headers=HEADERS, timeout=10,
-        json={"filter": {"property": "Date", "date": {"equals": today.isoformat()}}},
-    )
-    q.raise_for_status()
+    page_name = today.strftime("%a, %d %b %Y")
+    cols = _columns()
+
+    if cols["date"]:
+        flt = {"property": cols["date"], "date": {"equals": today.isoformat()}}
+    else:   # no date column: fall back to matching the page title
+        flt = {"property": cols["title"], "title": {"equals": page_name}}
+    q = requests.post(f"{API}/databases/{DB}/query", headers=HEADERS, timeout=10,
+                      json={"filter": flt})
+    _check(q)
     if q.json()["results"]:
         return q.json()["results"][0]["id"]
 
+    properties = {cols["title"]: {"title": _text(page_name)}}
+    if cols["date"]:
+        properties[cols["date"]] = {"date": {"start": today.isoformat()}}
     body = {
         "parent": {"database_id": DB},
-        "icon": {"type": "emoji", "emoji": "✦"},
-        "properties": {
-            "Name": {"title": _text(today.strftime("%a, %d %b %Y"))},
-            "Date": {"date": {"start": today.isoformat()}},
-        },
+        "icon": {"type": "emoji", "emoji": "\u2726"},
+        "properties": properties,
         "children": [
             {"type": "heading_2", "heading_2": {"rich_text": _text(s)}}
             for s in SECTIONS
         ],
     }
     r = requests.post(f"{API}/pages", headers=HEADERS, json=body, timeout=10)
-    r.raise_for_status()
+    _check(r)
     return r.json()["id"]
 
 
 def _heading_ids(page_id):
     r = requests.get(f"{API}/blocks/{page_id}/children", headers=HEADERS, timeout=10)
-    r.raise_for_status()
+    _check(r)
     ids = {}
     for b in r.json()["results"]:
-        if b["type"] == "heading_2":
+        if b["type"] == "heading_2" and b["heading_2"]["rich_text"]:
             ids[b["heading_2"]["rich_text"][0]["plain_text"]] = b["id"]
     return ids
 
@@ -79,7 +113,7 @@ def _ensure_headings(page_id):
                 for s in missing
             ]},
         )
-        r.raise_for_status()
+        _check(r)
         ids = _heading_ids(page_id)
     return ids
 
@@ -97,7 +131,7 @@ def push(kind, text):
         f"{API}/blocks/{page_id}/children", headers=HEADERS, timeout=10,
         json={"children": [block], "after": after},
     )
-    r.raise_for_status()
+    _check(r)
 
 
 def _log(message):

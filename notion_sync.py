@@ -78,7 +78,7 @@ def _today_page_id():
         properties[cols["date"]] = {"date": {"start": today.isoformat()}}
     body = {
         "parent": {"database_id": DB},
-        "icon": {"type": "emoji", "emoji": "\u2726"},
+        "icon": {"type": "emoji", "emoji": "✨"},
         "properties": properties,
         "children": [
             {"type": "heading_2", "heading_2": {"rich_text": _text(s)}}
